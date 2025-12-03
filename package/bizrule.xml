@@ -1,0 +1,182 @@
+<?xml version='1.0' encoding="UTF-8" ?>
+<HEAD>
+<PACKAGE>DHRD-113002_Mandatory_Implementation_Workflow_Management_Package_3_Biz_Rule</PACKAGE>
+<NAME>DHRD-113002_Mandatory_Implementation_Workflow_Management_Package_3_Biz_Rule</NAME>
+<CONTENT_HASH>b2963bd85fe300b787a94c9b8eccc548c3ebb0f68119cfbebf56742482e23c9b</CONTENT_HASH>
+<BUILD_DATE>20251128</BUILD_DATE>
+<LEVEL>MANDATORY</LEVEL>
+<RELEASE>7.4.1.0</RELEASE>
+<CREATOR>NeoXam</CREATOR>
+</HEAD>
+
+<BODY>
+
+
+<!--MxRule 173709 v5 -->
+<RESULT MODE="XML" ACTION="GETOBJECTS"  VERSION="2"  CHARSET="UTF8" >
+<SMARTRULE FIND="RULE_CODE='WF_CHECK_RUN'" USER="NeoXam" UPDATE_DATE="28/11/2025" UPDATE_TIME="14:47:35" LABEL='Check Run'>
+<T_SMARTRULE CODEFIELDS="RULE_CODE" >
+<R_SMARTRULE CODE=",[&quot;RULE_CODE&quot;,&quot;WF_CHECK_RUN&quot;,]"  LOCAL_ID="173709" >
+<ACTIVE >Y</ACTIVE>
+<CONDITION ><![CDATA[$,["RULE_CODE","WF_CHECK_RUN",]^CONDITION]]></CONDITION>
+<DESCRIPTION ><![CDATA[Main business rule that recalculates steps statuses for a workflow.]]></DESCRIPTION>
+<IMPACT ><![CDATA[notifiyEvent := 0  // Flag to track if any notification event is raised
+
+foreach obj.WORKFLOW_STEP do {
+  
+  stepInitialStatus := obj.STEP_STATUS
+  stepId := obj.WORKFLOW_STEP_ID  // Unique identifier for the step
+  stepCode :=obj.STEP_CODE;   //Step is code
+  stepType := obj.STEP_TYPE
+  stepType := getListItemCode("WORKFLOW_INPUT_TYPE", stepType, 0)
+  
+  if (getListItemCode("WF_STATUS", stepInitialStatus, 1) != 1){
+  
+  stepInput := obj.STEP_INPUT  // Input required by the step
+  stepReceivedValidatorInput := obj.STEP_RECEIVED_VALIDATOR_INPUT  // Input actually received by the step
+  stepReceivedInput := obj.STEP_RECEIVED_USER_INPUT  // Input actually received by the step
+  index := obj.STEP_SEQUENCE_NUMBER  // Step's position in the workflow sequence
+
+ // Determine if the prerequisite step(s) are finished
+  preFinished := (index = 1) ? 1 : 0  // First step is always pre-finished
+  if (index > 1) {
+    prevIndex := index - 1  // Previous step index
+    preStatus := obj.STEP_STATUS[STEP_SEQUENCE_NUMBER = prevIndex]  // Status of the previous step
+    preBlocking := (obj.STEP_IS_BLOCKING[STEP_SEQUENCE_NUMBER = prevIndex] = 'Y') ? 1 : 0  // Check if the previous step is blocking
+
+    // Pre-finished if the previous step is non-blocking or has a successful status
+    if (preBlocking != 1 or getListItemCode("WF_STATUS", preStatus, 2) = 1) {
+      preFinished := 1
+    }
+  }
+
+    
+    
+  // Check if the required input has been received
+
+  if(stepType = "AUTO") inputReceived := 1
+    else if ((stepType = "INPUT" and stepReceivedInput != "") or (stepType = "INPUT_WITH_VALIDATION" and stepReceivedValidatorInput != "" )or (stepType = "INPUT_WITH_VALIDATION" and (stepReceivedInput =getListItemId("WORKFLOW_ACTIONS", "REJECT")) ))
+     {inputReceived := 1}
+  else inputReceived := 0
+
+  
+  //inputReceived := (stepInput = stepReceivedInput) ? 1 : 0
+  awaitingEventLog := array();   
+  
+  // Check if all required events for this step are completed
+  query := "select w.AWAITING_EVENT from WORKFLOW_STEP_WAIT w where w.WAITING_STEP =" + stepId
+  res := getSqlData(query)  // Query the database for events the step is waiting for
+
+  waitFinished := 1  // Assume all events are finished initially
+  foreach event in res do {
+   eventCode := event[0]
+   eventPattern:=getObject("MxWorkflowEventPattern",eventCode);
+   eventLogCode:=WF_GET_EVENT_LOG_CODE(obj , eventPattern);
+   eventLogs := getObjects("MxWorkflowEventLog", "EVENT_CREATED_LOG= '"+eventLogCode+"'")  // Check if the event is logged
+   arrayappend(awaitingEventLog, eventLogs[0]);
+  
+ }
+ 
+ for(i:=0; i<arraysize(awaitingEventLog); i:=i+1){
+       awaitingEvent:=awaitingEventLog[i];
+       if(awaitingEvent!=""){
+                  if(awaitingEvent.STATUS !="VALIDATED")
+              {
+               waitFinished := 0  // Mark waiting as not finished
+                  break  // Exit the loop early as one missing event is enough
+                }
+    
+    
+    } else{
+                   waitFinished := 0  // Mark waiting as not finished
+                  break  // Exit the loop early as one missing event is enough
+    
+    }
+    
+
+
+        }
+  
+  // If the step's prerequisites and waiting conditions are satisfied
+  if (waitFinished = 1 and preFinished = 1) {
+    //checkCondition := obj.WF_CHECK_STEP_CONDITION(stepId)  // Validate specific conditions for the step
+    //checkCondition :=1
+    // Determine step status based on conditions and input
+    stepStatus := "RUNNING"  // Default to "RUNNING"
+    
+    //if (checkCondition = 1 and inputReceived = 1) {
+    //  stepStatus := "SUCCESS"
+    //}
+    
+  if(inputReceived = 1){
+     
+        
+    if(stepReceivedValidatorInput!=""){
+      if( stepReceivedValidatorInput =getListItemId("WORKFLOW_ACTIONS", "INVALIDATE")){
+        stepStatus := "ERROR" }
+        else{ stepStatus := "SUCCESS"}  
+     }
+   else if (stepReceivedInput!=""){
+      if(stepReceivedInput =getListItemId("WORKFLOW_ACTIONS", "REJECT")){
+          stepStatus := "ERROR" }
+      else{ stepStatus := "SUCCESS"}  
+    }
+   else{ stepStatus := "SUCCESS"
+       }
+        }
+  
+     
+
+      
+    // If status changed, update step status and returns if an event is loged
+    newEvent := 0
+    stepInitialStatus := getListItemCode("WF_STATUS", stepInitialStatus, 0)
+    if(stepInitialStatus != stepStatus)
+      { 
+   
+         newEvent := obj.WF_UPDATE_STEP_STATUS(stepId, stepStatus)
+    }
+        
+       
+
+    
+    
+    
+    //Set the notification event to 1 if at least one event is logged
+    if (notifiyEvent = 0 and newEvent = 1) notifiyEvent := 1
+  }
+  
+  }
+  
+
+}
+
+// Return the notification event status
+return notifiyEvent]]></IMPACT>
+<PRIVACY_LEVEL >SMARTCO</PRIVACY_LEVEL>
+<REEXECUTED_IN_BETWEEN_VERSIONS ></REEXECUTED_IN_BETWEEN_VERSIONS>
+<RULE_CATEGORY >WORKFLOW</RULE_CATEGORY>
+<RULE_CODE ><![CDATA[WF_CHECK_RUN]]></RULE_CODE>
+<RULE_GROUP >COMPUTE</RULE_GROUP>
+<RULE_STATUS >STANDARD</RULE_STATUS>
+<RULE_STATUS_AVAILABILITY >COMP</RULE_STATUS_AVAILABILITY>
+<RULE_TYPE >MONO</RULE_TYPE>
+<USER_COMMENT ><![CDATA[The function evaluates each step in a workflow by applying four key checks to determine its status. These checks ensure that all prerequisites and conditions are met before progressing.
+
+Checks Applied:
+-Predecessor Validation: Ensures that all preceding steps are in a terminal status.
+-Wait Completion: Verifies that all required external events have been received.
+-Input Validation: Confirms that any expected input has been provided and matches the required specification.
+-Step Conditions: Validates that custom conditions specific to the step are satisfied.
+
+Final Step Statuses:
+-Running: The step is set to "Running" if all predecessors are complete and all awaited events have been received.
+-Success: The step progresses to "Success" if, in addition to meeting the criteria for "Running," the input validation and step conditions are fulfilled.
+-Waiting: If any of the above conditions are not satisfied, the step remains in "Waiting" status.
+
+Event Notification:
+-If the step's status change results in logging a new event, the algorithm returns 1 to indicate that an event notification was triggered.
+-If no new event is logged, the algorithm returns 0.]]></USER_COMMENT>
+</R_SMARTRULE>
+</T_SMARTRULE>
+...
